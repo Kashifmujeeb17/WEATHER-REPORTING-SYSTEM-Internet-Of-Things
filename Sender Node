@@ -1,0 +1,88 @@
+#include <esp_now.h>
+#include <WiFi.h>
+#include <Wire.h>
+#include <Adafruit_BMP085.h>
+#include <DHT.h>
+#define DHTPIN 4 // DHT11 data pin
+#define DHTTYPE DHT11
+uint8_t broadcastAddress[] = {0x08, 0x3A, 0xF2, 0x51, 0x71, 0x84}; // Replace with your receiver's MAC
+// Combined data structure for both sensors
+typedef struct sensor_data {
+ float bmpTemperature; // BMP180 temperature
+ float bmpPressure; // BMP180 pressure in hPa
+ float bmpAltitude; // BMP180 altitude (optional)
+ float dhtTemperature; // DHT11 temperature
+ float dhtHumidity; // DHT11 humidity
+} sensor_data;
+
+sensor_data mySensorData;
+esp_now_peer_info_t peerInfo;
+Adafruit_BMP085 bmp;
+DHT dht(DHTPIN, DHTTYPE);
+// Callback function for ESP-NOW send status
+void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+ Serial.print("\r\nLast Packet Send Status:\t");
+Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Delivery Success" : "Delivery
+Fail");
+}
+
+void setup() {
+ Serial.begin(115200);
+ WiFi.mode(WIFI_STA);
+ // Initialize ESP-NOW
+ if (esp_now_init() != ESP_OK) {
+ Serial.println("Error initializing ESP-NOW");
+ return;
+ }
+
+esp_now_register_send_cb(OnDataSent); // Register callback for send status
+ // Register peer
+ memcpy(peerInfo.peer_addr, broadcastAddress, 6);
+ peerInfo.channel = 0;
+ peerInfo.encrypt = false;
+ if (esp_now_add_peer(&peerInfo) != ESP_OK){
+ Serial.println("Failed to add peer");
+ return;
+ }
+
+// Initialize BMP180 sensor
+ if (!bmp.begin()) {
+ Serial.println("Could not find a valid BMP180 sensor, check wiring!");
+ while (1); // Wait indefinitely (or add error handling)
+ }
+ dht.begin(); // Initialize DHT11 sensor
+}
+void loop() {
+ // Read BMP180 sensor data
+ mySensorData.bmpTemperature = bmp.readTemperature();
+ mySensorData.bmpPressure = bmp.readPressure() / 100.0; // Convert to hPa (optional)
+ mySensorData.bmpAltitude = bmp.readAltitude();
+ // Read DHT11 sensor data
+ mySensorData.dhtHumidity = dht.readHumidity();
+ mySensorData.dhtTemperature = dht.readTemperature();
+ // Send sensor data via ESP-NOW
+ esp_err_t result = esp_now_send(broadcastAddress, (uint8_t *)&mySensorData,
+sizeof(mySensorData));
+ if (result == ESP_OK) {
+ Serial.println("Sent with success");
+ } else {
+ Serial.println("Error sending the data");
+ }
+ // Display sensor data (optional, for debugging)
+ Serial.println("----- BMP180 -----");
+ Serial.print("Temperature: ");
+ Serial.print(mySensorData.bmpTemperature);
+ Serial.print(" C\tPressure: ");
+ Serial.print(mySensorData.bmpPressure);
+ Serial.print(" hPa\tAltitude: ");
+ Serial.print(mySensorData.bmpAltitude);
+ Serial.println(" meters");
+ Serial.println("----- DHT11 -----");
+ Serial.print("Temperature: ");
+ Serial.print(mySensorData.dhtTemperature);
+ Serial.print(" C\tHumidity: ");
+ Serial.print(mySensorData.dhtHumidity);
+ Serial.println(" %");
+ Serial.println("-----------------"); // Separator for readability
+ delay(2000); // Adjust the delay between readings as needed
+}
