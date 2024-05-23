@@ -1,0 +1,249 @@
+#include <esp_now.h>
+#include <WiFi.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <Adafruit_BMP085.h>
+#include <DHT.h>
+#include "Adafruit_MQTT.h"
+#include "Adafruit_MQTT_Client.h"
+// Define OLED display size and reset pin
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+// Define DHT11 sensor on receiver node
+#define DHTPIN 4 // DHT11 data pin on receiver
+#define DHTTYPE DHT11
+DHT dht(DHTPIN, DHTTYPE);
+// Define BMP180 sensor on receiver node
+Adafruit_BMP085 bmp;
+// WiFi credentials and Adafruit IO
+#define WLAN_SSID "" // replace with your WLAN
+#define WLAN_PASS "" // replace with your WLAN pass
+#define AIO_SERVER "io.adafruit.com"
+#define AIO_SERVERPORT 1883
+#define AIO_USERNAME "" // replace adafruit AIO_Username
+#define AIO_KEY "" // replace adafruit AIO_KEY
+WiFiClient client;
+Adafruit_MQTT_Client mqtt(&client, AIO_SERVER, AIO_SERVERPORT,
+AIO_USERNAME, AIO_KEY);
+Adafruit_MQTT_Publish feedIntemp = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME
+"/feeds/intemp");
+Adafruit_MQTT_Publish feedInhum = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME
+"/feeds/inhum");
+Adafruit_MQTT_Publish feedInalt = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME
+"/feeds/inalt");
+Adafruit_MQTT_Publish feedInpress = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME
+"/feeds/inpress");
+Adafruit_MQTT_Publish feedInbmptemp = Adafruit_MQTT_Publish(&mqtt,
+AIO_USERNAME "/feeds/inbmptemp");
+// New feeds for receiver's own sensors
+Adafruit_MQTT_Publish feedTemp = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME
+"/feeds/temp");
+Adafruit_MQTT_Publish feedHum = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME
+"/feeds/hum");
+Adafruit_MQTT_Publish feedAlt = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME
+"/feeds/alt");
+Adafruit_MQTT_Publish feedPressure = Adafruit_MQTT_Publish(&mqtt, AIO_USERNAME
+"/feeds/pressure");
+bool data_received = false;
+// Structure to hold received sensor data
+typedef struct sensor_data {
+ float bmpTemperature; // BMP180 temperature from sender
+ float bmpPressure; // BMP180 pressure in hPa from sender
+ float bmpAltitude; // BMP180 altitude from sender
+ float dhtTemperature; // DHT11 temperature from sender
+ float dhtHumidity; // DHT11 humidity from sender
+} sensor_data;
+sensor_data receivedData;
+// Function to initialize OLED display
+void initOLED() {
+ if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+ Serial.println(F("SSD1306 allocation failed"));
+ for (;;);
+ }
+ display.display();
+ display.clearDisplay();
+}
+// Function to display data on OLED
+void displayDataOnOLED(float bmpTemp, float bmpPress, float bmpAlt, float dhtTemp, float
+dhtHum, const char* source) {
+ display.clearDisplay();
+ display.setTextSize(1);
+ display.setTextColor(SSD1306_WHITE);
+ display.setCursor(0, 0);
+ display.print(F("Source: "));
+ display.println(source);
+ display.setCursor(0, 10);
+ display.print(F("BMP Temp: "));
+ display.print(bmpTemp);
+ display.println(F(" C"));
+ display.setCursor(0, 20);
+ display.print(F("BMP Press: "));
+ display.print(bmpPress);
+display.println(F(" hPa"));
+ display.setCursor(0, 30);
+ display.print(F("BMP Alt: "));
+ display.print(bmpAlt);
+ display.println(F(" m"));
+ display.setCursor(0, 40);
+ display.print(F("DHT Temp: "));
+ display.print(dhtTemp);
+ display.println(F(" C"));
+ display.setCursor(0, 50);
+ display.print(F("DHT Hum: "));
+ display.print(dhtHum);
+ display.println(F(" %"));
+ display.display();
+}
+// Callback function when data is received
+void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
+ data_received = true;
+ memcpy(&receivedData, incomingData, sizeof(receivedData)); // Copy received data into
+the struct
+ Serial.println("Received Data:");
+ Serial.print("BMP180 Temperature: ");
+ Serial.print(receivedData.bmpTemperature);
+ Serial.println(" C");
+ Serial.print("BMP180 Pressure: ");
+ Serial.print(receivedData.bmpPressure);
+ Serial.println(" hPa");
+Serial.print("BMP180 Altitude: ");
+ Serial.print(receivedData.bmpAltitude);
+ Serial.println(" m");
+ Serial.print("DHT11 Temperature: ");
+ Serial.print(receivedData.dhtTemperature);
+ Serial.println(" C");
+ Serial.print("DHT11 Humidity: ");
+ Serial.print(receivedData.dhtHumidity);
+ Serial.println(" %");
+}
+void setup() {
+ Serial.begin(115200);
+ initOLED();
+ WiFi.mode(WIFI_STA);
+ // Initialize ESP-NOW
+ if (esp_now_init() != ESP_OK) {
+ Serial.println("Error initializing ESP-NOW");
+ return;
+ }
+ // Register receive callback
+ esp_now_register_recv_cb(OnDataRecv);
+ // Initialize BMP180 sensor on receiver node
+ if (!bmp.begin()) {
+ Serial.println("Could not find a valid BMP180 sensor, check wiring!");
+ while (1);
+ }
+dht.begin(); // Initialize DHT11 sensor on receiver node
+}
+void loop() {
+ start_now();
+ if (data_received) {
+ esp_now_deinit();
+ connect_wifi();
+ connect();
+ send_data_msg();
+ delay(1000);
+ data_received = false;
+ }
+ // Read BMP180 sensor data from receiver node
+ float bmpTempReceiver = bmp.readTemperature();
+ float bmpPressReceiver = bmp.readPressure() / 100.0;
+ float bmpAltReceiver = bmp.readAltitude();
+ // Read DHT11 sensor data from receiver node
+ float dhtHumReceiver = dht.readHumidity();
+ float dhtTempReceiver = dht.readTemperature();
+ // Display received data from sender node
+ displayDataOnOLED(receivedData.bmpTemperature, receivedData.bmpPressure,
+receivedData.bmpAltitude, receivedData.dhtTemperature, receivedData.dhtHumidity,
+"Sender");
+ delay(2000); // Adjust delay to create animation effect
+ // Display data from receiver node
+ displayDataOnOLED(bmpTempReceiver, bmpPressReceiver, bmpAltReceiver,
+dhtTempReceiver, dhtHumReceiver, "Receiver");
+ delay(2000); // Adjust delay to create animation effect
+// Publish receiver node data to Adafruit IO
+ feedTemp.publish(dhtTempReceiver);
+ feedHum.publish(dhtHumReceiver);
+ feedAlt.publish(bmpAltReceiver);
+ feedPressure.publish(bmpPressReceiver);
+ delay(2000); // Adjust delay between readings
+}
+void connect_wifi() {
+ int wifi_connection = 0;
+ Serial.println("Connecting WiFi..");
+ WiFi.mode(WIFI_STA);
+ WiFi.begin(WLAN_SSID, WLAN_PASS);
+ while (WiFi.status() != WL_CONNECTED) {
+ delay(500);
+ if (wifi_connection > 99) { ESP.restart(); }
+ wifi_connection++;
+ Serial.println(F("."));
+ }
+
+ Serial.println();
+ Serial.println(F("WiFi connected to: "));
+ Serial.println(WiFi.SSID());
+ Serial.println(F("IP address: "));
+ Serial.println(WiFi.localIP());
+ delay(500);
+}
+void disconnect_wifi() {
+ WiFi.disconnect();
+WiFi.mode(WIFI_OFF);
+ int wifi_connection = 0;
+ while (WiFi.status() == WL_CONNECTED) {
+ delay(100);
+ if (wifi_connection > 99) { ESP.restart(); }
+ wifi_connection++;
+ }
+ Serial.println("WiFi going to Sleep\n");
+}
+// Connect to Adafruit IO via MQTT
+void connect() {
+ int io_connection = 0;
+ Serial.println(F("Connecting to Adafruit IO... "));
+ int8_t ret;
+ while ((ret = mqtt.connect()) != 0) {
+ io_connection++;
+ switch (ret) {
+ case 1: Serial.println(F("Wrong protocol")); break;
+ case 2: Serial.println(F("ID rejected")); break;
+ case 3: Serial.println(F("Server unavailable")); break;
+ case 4: Serial.println(F("Bad user/pass")); break;
+ case 5: Serial.println(F("Not authorized")); break;
+ case 6: Serial.println(F("Failed to subscribe")); break;
+ default: Serial.println(F("Connection failed")); break;
+ }
+ if (io_connection == 10) { ESP.restart(); }
+ if (ret >= 0)
+ mqtt.disconnect();
+Serial.println(F("Retrying connection..."));
+ delay(5000);
+ }
+ Serial.println(F("Adafruit IO Connected!"));
+ delay(500);
+}
+void send_data_msg() {
+ Serial.println("Sending data");
+ // Publish data to Adafruit IO
+ feedIntemp.publish(receivedData.dhtTemperature);
+ feedInhum.publish(receivedData.dhtHumidity);
+ feedInalt.publish(receivedData.bmpAltitude);
+ feedInpress.publish(receivedData.bmpPressure);
+ feedInbmptemp.publish(receivedData.bmpTemperature);
+ delay(500);
+}
+void start_now() {
+ WiFi.mode(WIFI_STA);
+ // Init ESP-NOW
+ if (esp_now_init() != ESP_OK) {
+ Serial.println("Error initializing ESP-NOW");
+ return;
+ }
+ Serial.println("Starting ESP Now");
+ // Once ESPNow is successfully initialized, we will register for recv callback to get received
+packet info
+ esp_now_register_recv_cb(OnDataRecv);
+}
